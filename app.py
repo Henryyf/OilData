@@ -4,11 +4,42 @@ import io
 import openpyxl
 from openpyxl.styles import Font
 
-st.set_page_config(page_title="USDA大豆产量对比助手", layout="centered")
+st.set_page_config(page_title="USDA产量对比助手", layout="centered")
 
-st.title("USDA大豆产量同比环比一键表格")
+st.title("🌾 USDA主要作物产量同比环比一键表格")
 
-# 默认国家
+# 1. 上传数据区
+st.markdown("#### 1. 上传最新两个月的csv（格式同USDA原表，无需修改）")
+with st.container():
+    col1, col2 = st.columns(2)
+    file_july = col1.file_uploader("上传本月csv", type="csv", key="july")
+    file_june = col2.file_uploader("上传上月csv", type="csv", key="june")
+
+# 2. 默认大豆/自动扫描
+default_commodity_list = ["Oilseed, Soybean"]
+default_cn_dict = {"Oilseed, Soybean": "大豆"}
+
+commodity_list = default_commodity_list.copy()
+if file_july:
+    df_july_tmp = pd.read_csv(file_july)
+    commodity_list = sorted(df_july_tmp['Commodity_Description'].dropna().unique())
+    file_july.seek(0)  # 重新指针，否则后面再读取会报错
+
+default_index = 0
+for i, c in enumerate(commodity_list):
+    if c == "Oilseed, Soybean":
+        default_index = i
+        break
+
+st.markdown("#### 2. 选择作物并填写中文")
+cols = st.columns([3, 2])
+selected_commodity = cols[0].selectbox(
+    "请选择要对比的作物（英文）", commodity_list, index=default_index, label_visibility="collapsed"
+)
+default_cn = "大豆" if selected_commodity == "Oilseed, Soybean" else ""
+cn_commodity = cols[1].text_input("请输入对应的中文名", value=default_cn, label_visibility="collapsed", placeholder="如：大豆")
+
+# 3. 国家名单与编辑
 default_countries = [
     {"en": "Brazil", "cn": "巴西"},
     {"en": "Argentina", "cn": "阿根廷"},
@@ -16,29 +47,58 @@ default_countries = [
     {"en": "United States", "cn": "美国"},
     {"en": "China", "cn": "中国"}
 ]
+if "edit_country_data" not in st.session_state:
+    df0 = pd.DataFrame(default_countries)
+    df0["del"] = False
+    st.session_state.edit_country_data = df0
 
-with st.form("params"):
-    st.markdown("#### 步骤一：上传最新两个月的csv（格式同USDA原表，无需修改）")
-    col1, col2 = st.columns(2)
-    file_july = col1.file_uploader("上传本月csv（如7月）", type="csv", key="july")
-    file_june = col2.file_uploader("上传上月csv（如6月）", type="csv", key="june")
+st.markdown("#### 3. 国家名单（可编辑）")
+data_local = st.session_state.edit_country_data.copy()
+data = st.data_editor(
+    data_local,
+    use_container_width=True,
+    column_order=["en", "cn", "del"],
+    hide_index=True,
+    key="edit_country"
+)
 
-    st.markdown("#### 步骤二：如需修改国家名单（中英文都要填写）")
-    data = st.data_editor(
-        pd.DataFrame(default_countries), 
-        use_container_width=True,
-        column_order=["en", "cn"],
-        key="edit_country"
-    )
-    submitted = st.form_submit_button("生成对比表格")
+# 添加新国家区域
+with st.container():
+    st.markdown("#### 添加新国家")
+    add_cols = st.columns([4, 4, 2])
+    with add_cols[0]:
+        new_en = st.text_input("英文名", key="add_en", label_visibility="collapsed", placeholder="英文名")
+    with add_cols[1]:
+        new_cn = st.text_input("中文名", key="add_cn", label_visibility="collapsed", placeholder="中文名")
+    with add_cols[2]:
+        st.write("")  # 占位对齐
+        if st.button("➕ 添加", key="add_btn", help="添加到国家名单"):
+            if new_en.strip() and new_cn.strip():
+                new_row = pd.DataFrame([{"en": new_en.strip(), "cn": new_cn.strip(), "del": False}])
+                st.session_state.edit_country_data = pd.concat([data, new_row], ignore_index=True)
+                st.rerun()
+            else:
+                st.warning("请填写完整的英文和中文名称！")
 
-if submitted and file_july and file_june:
+    btn_cols = st.columns([1, 1])
+    with btn_cols[0]:
+        if st.button("🗑 删除所选", key="delete_btn", type="secondary", help="删除选中的国家"):
+            df_now = data
+            df_now = df_now[~df_now["del"]].reset_index(drop=True)
+            st.session_state.edit_country_data = df_now
+            st.rerun()
+    with btn_cols[1]:
+        st.write("")  # 空出空间
+
+# 生成对比表格按钮
+st.markdown("---")
+submit_btn = st.button("📊 生成对比表格", type="primary")
+
+if submit_btn and file_july and file_june and selected_commodity:
     with st.spinner("正在分析，请稍候..."):
-        # 读取
         df_july = pd.read_csv(file_july)
         df_june = pd.read_csv(file_june)
 
-        commodity = 'Oilseed, Soybean'
         attribute = 'Production'
         year_new = 2025  # 25/26
         year_old = 2024  # 24/25
@@ -49,7 +109,7 @@ if submitted and file_july and file_june:
             cn_name = getattr(row, "cn")
             def get_pred(df, market_year, country):
                 row_ = df[
-                    (df['Commodity_Description'] == commodity) &
+                    (df['Commodity_Description'] == selected_commodity) &
                     (df['Attribute_Description'] == attribute) &
                     (df['Market_Year'] == market_year) &
                     (df['Country_Name'] == country)
@@ -70,10 +130,10 @@ if submitted and file_july and file_june:
             })
         df_out = pd.DataFrame(results)
 
-        st.success("成功！下方可预览和下载Excel。")
+        st.success(f"{cn_commodity} 产量对比已生成！下方可预览和下载Excel。")
         st.dataframe(df_out, use_container_width=True)
 
-        # Excel高亮并导出
+        # 高亮Excel
         def highlight_excel(df_out):
             output = io.BytesIO()
             df_out.to_excel(output, index=False)
@@ -95,14 +155,18 @@ if submitted and file_july and file_june:
             bio.seek(0)
             return bio
 
-        st.download_button("下载Excel（含红绿高亮）", data=highlight_excel(df_out), file_name="usda_soybean_output.xlsx")
+        st.download_button(
+            f"⬇️ 下载{cn_commodity}产量对比Excel",
+            data=highlight_excel(df_out),
+            file_name=f"{cn_commodity}_output.xlsx"
+        )
 
-elif submitted:
-    st.warning("请上传本月和上月的csv文件")
+elif submit_btn:
+    st.warning("请上传两个csv并选择作物种类")
 
 st.markdown("""
 ---
-**温馨提示：**  
-- 国家名必须是英文与原csv完全一致，否则抓取不到数值。
-- 如果出现空白或报错，请检查csv数据、国家拼写和列名是否和原始USDA表格一致。
+**说明：**
+- 你可以选择任何作物进行对比分析，也可手动输入或编辑作物/国家中文名。
+- 国家英文名必须与csv内一致，否则无数据。
 """)
